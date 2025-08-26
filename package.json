@@ -1,0 +1,13 @@
+{
+  "name": "mfs-timeout-repro",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Reproduce IPFS MFS files.rm timeout bug",
+  "main": "reproduce-mfs-timeout.js",
+  "scripts": {
+    "start": "node reproduce-mfs-timeout.js"
+  },
+  "dependencies": {
+    "kubo-rpc-client": "^3.0.1"
+  }
+}
