@@ -28,6 +28,7 @@ process.env.DEBUG = process.env.DEBUG || "*";
 const logTimestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 const stdoutLogFile = path.join(__dirname, `reproduce-mfs-timeout_stdout_${logTimestamp}.log`);
 const stderrLogFile = path.join(__dirname, `reproduce-mfs-timeout_stderr_${logTimestamp}.log`);
+const operationsLogFile = path.join(__dirname, `ipfs-operations-log_${logTimestamp}.json`);
 
 // Create log streams
 const stdoutStream = fs.createWriteStream(stdoutLogFile, { flags: "a" });
@@ -58,20 +59,181 @@ process.on("exit", () => {
 console.log(`📝 Reproduce MFS timeout script logs:`);
 console.log(`   📄 stdout: ${stdoutLogFile}`);
 console.log(`   📄 stderr: ${stderrLogFile}`);
+console.log(`   📄 operations: ${operationsLogFile}`);
 
-// Utility function to wrap IPFS calls with 2-minute timeout
-function withTimeout(promise, operation, timeoutMs = 120000) {
+// Utility function to wrap IPFS calls with 2-minute timeout and detailed tracking
+function withTimeout(promise, operation, timeoutMs = 120000, details = {}) {
+    // If a timeout already occurred, reject immediately
+    if (timeoutOccurred) {
+        return Promise.reject(new Error("Program terminating due to previous timeout"));
+    }
+    
+    // Extract operation type from the operation string
+    const operationType = operation.split('(')[0].replace('ipfs.', '');
+    trackOperation(operationType);
+    
+    // Log operation start with details
+    const operationEntry = logOperationStart(operationType, operation, details);
+    
     return Promise.race([
-        promise,
+        promise.then(result => {
+            logOperationEnd(operationEntry, result);
+            return result;
+        }).catch(error => {
+            logOperationEnd(operationEntry, null, error);
+            throw error;
+        }),
         new Promise((_, reject) => {
             setTimeout(() => {
+                if (timeoutOccurred) return; // Prevent multiple timeouts
+                timeoutOccurred = true;
+                
                 const timestamp = new Date().toISOString();
                 const errorMsg = `TIMEOUT: ${operation} exceeded ${timeoutMs / 1000}s at ${timestamp}`;
                 console.error(`⏰ ${errorMsg}`);
-                reject(new Error(errorMsg));
+                
+                // Log timeout as error
+                const timeoutError = new Error(errorMsg);
+                logOperationEnd(operationEntry, null, timeoutError);
+                
+                // Print detailed timeout information
+                console.error("\n" + "=".repeat(70));
+                console.error("🚨 TIMEOUT DETECTED - PROGRAM TERMINATING 🚨");
+                console.error("=".repeat(70));
+                console.error(`Operation: ${operation}`);
+                console.error(`Timeout duration: ${timeoutMs / 1000} seconds`);
+                console.error(`Operation details:`, details);
+                console.error(`Timestamp: ${timestamp}`);
+                console.error(`Total operations completed: ${ipfsOperationStats.total}`);
+                console.error("=".repeat(70));
+                
+                // Print summary and write final JSON
+                printOperationSummary();
+                writeOperationLog();
+                
+                // Kill IPFS daemon immediately to free resources
+                if (ipfsDaemon) {
+                    console.error("🔧 Force killing IPFS daemon...");
+                    ipfsDaemon.kill('SIGKILL');
+                }
+                
+                // Force immediate exit with no grace period
+                console.error("🚪 Forcing process exit...");
+                process.exit(1);
+                
+                reject(timeoutError);
             }, timeoutMs);
         })
     ]);
+}
+
+// IPFS Operation Tracking
+const ipfsOperationStats = {
+    total: 0,
+    operations: {},
+    startTime: Date.now()
+};
+
+// Detailed operation log for JSON export
+const operationLog = {
+    sessionStart: new Date().toISOString(),
+    operations: []
+};
+
+
+function trackOperation(operationType) {
+    ipfsOperationStats.total++;
+    ipfsOperationStats.operations[operationType] = (ipfsOperationStats.operations[operationType] || 0) + 1;
+}
+
+function logOperationStart(operationType, operation, details = {}) {
+    const operationEntry = {
+        id: ipfsOperationStats.total,
+        type: operationType,
+        operation: operation,
+        details: details,
+        startTime: new Date().toISOString(),
+        startTimestamp: Date.now(),
+        endTime: null,
+        endTimestamp: null,
+        duration: null,
+        result: null,
+        error: null
+    };
+    
+    operationLog.operations.push(operationEntry);
+    return operationEntry;
+}
+
+function logOperationEnd(operationEntry, _result = null, error = null) {
+    operationEntry.endTime = new Date().toISOString();
+    operationEntry.endTimestamp = Date.now();
+    operationEntry.duration = operationEntry.endTimestamp - operationEntry.startTimestamp;
+    
+    if (error) {
+        operationEntry.result = error.message.includes('TIMEOUT') ? 'timeout' : 'error';
+        operationEntry.error = error.message;
+    } else {
+        operationEntry.result = 'success';
+        operationEntry.error = null;
+    }
+    
+    // Write to JSON file after each operation
+    writeOperationLog();
+    
+    return operationEntry;
+}
+
+function writeOperationLog() {
+    try {
+        const logData = {
+            ...operationLog,
+            config: {
+                NUM_DIRECTORIES: NUM_DIRECTORIES,
+                FILES_PER_DIR: FILES_PER_DIR,
+                PARALLEL_OPS: PARALLEL_OPS,
+                ROUTING_STRESS_OPS: ROUTING_STRESS_OPS,
+                USE_FLUSH: USE_FLUSH,
+                API_PORT: API_PORT,
+                GATEWAY_PORT: GATEWAY_PORT,
+                SWARM_PORT: SWARM_PORT,
+                TEMP_IPFS_DIR: TEMP_IPFS_DIR,
+                IPFS_API_URL: IPFS_API_URL
+            },
+            summary: {
+                totalOperations: ipfsOperationStats.total,
+                sessionDuration: Date.now() - ipfsOperationStats.startTime,
+                operationTypes: ipfsOperationStats.operations,
+                timeouts: Object.values(operationLog.operations).filter(op => op.result === 'timeout').length,
+                errors: Object.values(operationLog.operations).filter(op => op.result === 'error').length,
+                successes: Object.values(operationLog.operations).filter(op => op.result === 'success').length
+            }
+        };
+        fs.writeFileSync(operationsLogFile, JSON.stringify(logData, null, 2));
+    } catch (error) {
+        console.error(`Failed to write operations log: ${error.message}`);
+    }
+}
+
+function printOperationSummary() {
+    const duration = ((Date.now() - ipfsOperationStats.startTime) / 1000).toFixed(2);
+    console.log("\n" + "=".repeat(50));
+    console.log("📊 IPFS OPERATION SUMMARY");
+    console.log("=".repeat(50));
+    console.log(`Total operations: ${ipfsOperationStats.total}`);
+    console.log(`Duration: ${duration}s`);
+    console.log(`Operations per second: ${(ipfsOperationStats.total / parseFloat(duration)).toFixed(2)}`);
+    console.log(`Detailed log: ${operationsLogFile}`);
+    console.log("\nOperation breakdown:");
+    
+    const sortedOps = Object.entries(ipfsOperationStats.operations)
+        .sort(([,a], [,b]) => b - a);
+    
+    for (const [operation, count] of sortedOps) {
+        const percentage = ((count / ipfsOperationStats.total) * 100).toFixed(1);
+        console.log(`  ${operation}: ${count} (${percentage}%)`);
+    }
+    console.log("=".repeat(50));
 }
 
 // Configuration
@@ -83,10 +245,10 @@ const IPFS_API_URL = `http://127.0.0.1:${API_PORT}`;
 
 // Based on the actual failing test patterns - need intensive parallel load
 const NUM_DIRECTORIES = 500; // Moderate number of dirs
-const FILES_PER_DIR = 5000; // More files per dir to build cache faster  
-const PARALLEL_OPS = 100; // Increase parallelism 
+const FILES_PER_DIR = 5000; // More files per dir to build cache faster
+const PARALLEL_OPS = 100; // Increase parallelism
 const ROUTING_STRESS_OPS = 100; // More routing pressure
-const USE_FLUSH = false;
+const USE_FLUSH = true;
 
 console.log("=".repeat(70));
 console.log("IPFS MFS files.rm Timeout Reproduction Script");
@@ -107,6 +269,7 @@ console.log("- Key factors: Isolated node + Heavy MFS load + No flushing");
 console.log("=".repeat(70));
 
 let ipfsDaemon = null;
+let timeoutOccurred = false;
 
 async function setupIpfsNode() {
     console.log("\n1. Setting up dedicated IPFS node with GC disabled...");
@@ -329,7 +492,7 @@ async function runMfsTimeoutTest() {
     const baseDir = `/test-mfs-timeout-${Date.now()}`;
 
     console.log(`\n3. Creating base directory: ${baseDir}`);
-    await withTimeout(ipfs.files.mkdir(baseDir, { parents: true }), `ipfs.files.mkdir(${baseDir})`);
+    await withTimeout(ipfs.files.mkdir(baseDir, { parents: true }), `ipfs.files.mkdir(${baseDir})`, 120000, { path: baseDir });
 
     console.log("\n4. Creating nested directory structure without flushing...");
     console.log("  This simulates the plebbit-js MFS usage pattern...");
@@ -360,7 +523,16 @@ async function runMfsTimeoutTest() {
                                     parents: true,
                                     flush: false // Critical: no flushing
                                 }),
-                                `ipfs.files.write(${filePath})`
+                                `ipfs.files.write(${filePath})`,
+                                120000,
+                                { 
+                                    path: filePath, 
+                                    subplebbit: subplebbitAddress, 
+                                    timestampRange: timestampRange,
+                                    commentCid: commentCid,
+                                    contentSize: content.length,
+                                    flush: false
+                                }
                             ).catch((err) => {
                                 console.error(`Failed to write ${filePath}:`, err.message);
                             })
@@ -540,7 +712,14 @@ async function runMfsTimeoutTest() {
                     recursive: true,
                     flush: false // This is the key - no flushing causes the bug
                 }),
-                `ipfs.files.rm(${pathToRemove})`
+                `ipfs.files.rm(${pathToRemove})`,
+                120000,
+                {
+                    path: pathToRemove,
+                    recursive: true,
+                    flush: false,
+                    operation: "critical-remove"
+                }
             );
 
             const removeTime = ((performance.now() - removeStart) / 1000).toFixed(2);
@@ -580,9 +759,11 @@ async function runMfsTimeoutTest() {
         console.log("   - Try increasing NUM_DIRECTORIES and FILES_PER_DIR");
         console.log("   - The system may be too fast or have different IPFS version");
         console.log("   - Run the script multiple times to build up more state");
+        printOperationSummary();
     } else {
         console.log(`\n9. Bug reproduction successful! ${timeoutCount} timeouts occurred`);
         console.log("   This confirms the MFS cache issue exists in your IPFS setup");
+        printOperationSummary();
     }
 
     // Attempt cleanup (may also timeout)
@@ -619,17 +800,45 @@ async function main() {
         console.log("Try running the script again or increasing the parameters.");
     }
     console.log("=".repeat(70));
+    
+    // Final operation summary
+    if (ipfsOperationStats.total > 0) {
+        printOperationSummary();
+        writeOperationLog(); // Ensure final JSON is written
+    }
+}
+
+// Cleanup and exit function for immediate termination
+async function cleanupAndExit(exitCode, reason) {
+    console.error(`\n🛑 PROGRAM TERMINATING: ${reason}`);
+    console.error("Performing cleanup before exit...");
+    
+    try {
+        await cleanupIpfsNode();
+        console.error("✅ Cleanup completed successfully");
+    } catch (error) {
+        console.error(`❌ Cleanup failed: ${error.message}`);
+    }
+    
+    console.error(`Exiting with code ${exitCode}`);
+    process.exit(exitCode);
 }
 
 // Handle cleanup on interruption
 process.on("SIGINT", async () => {
     console.log("\n\nScript interrupted by user");
+    if (ipfsOperationStats.total > 0) {
+        printOperationSummary();
+    }
     await cleanupIpfsNode();
     process.exit(1);
 });
 
 process.on("SIGTERM", async () => {
     console.log("\n\nScript terminated");
+    if (ipfsOperationStats.total > 0) {
+        printOperationSummary();
+    }
     await cleanupIpfsNode();
     process.exit(1);
 });
@@ -637,6 +846,9 @@ process.on("SIGTERM", async () => {
 // Run the test
 main().catch(async (error) => {
     console.error("\nUnexpected error in main:", error);
+    if (ipfsOperationStats.total > 0) {
+        printOperationSummary();
+    }
     await cleanupIpfsNode();
     process.exit(1);
 });
