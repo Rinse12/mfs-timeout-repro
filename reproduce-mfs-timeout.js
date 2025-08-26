@@ -295,7 +295,7 @@ async function setupIpfsNode() {
     }
 
     // Use IPFS from node_modules for latest version
-    const ipfsPath = path.join(__dirname, "../../node_modules/kubo/kubo/ipfs");
+    const ipfsPath = path.join(__dirname, "node_modules/kubo/kubo/ipfs");
 
     // Initialize IPFS repo
     console.log("  Initializing IPFS repository...");
