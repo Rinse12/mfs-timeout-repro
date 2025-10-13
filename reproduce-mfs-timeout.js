@@ -20,15 +20,21 @@ import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const LOG_DIR = path.join(__dirname, "logs");
+
+// Ensure log directory exists for all output artifacts
+if (!fs.existsSync(LOG_DIR)) {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+}
 
 // Enable DEBUG logging by default
 process.env.DEBUG = process.env.DEBUG || "*";
 
 // Set up logging to files
 const logTimestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-const stdoutLogFile = path.join(__dirname, `reproduce-mfs-timeout_stdout_${logTimestamp}.log`);
-const stderrLogFile = path.join(__dirname, `reproduce-mfs-timeout_stderr_${logTimestamp}.log`);
-const operationsLogFile = path.join(__dirname, `ipfs-operations-log_${logTimestamp}.json`);
+const stdoutLogFile = path.join(LOG_DIR, `reproduce-mfs-timeout_stdout_${logTimestamp}.log`);
+const stderrLogFile = path.join(LOG_DIR, `reproduce-mfs-timeout_stderr_${logTimestamp}.log`);
+const operationsLogFile = path.join(LOG_DIR, `ipfs-operations-log_${logTimestamp}.json`);
 
 // Create log streams
 const stdoutStream = fs.createWriteStream(stdoutLogFile, { flags: "a" });
@@ -397,8 +403,8 @@ async function setupIpfsNode() {
     console.log("  Starting IPFS daemon...");
 
     // Create log files for kubo daemon
-    const kuboStdoutLogFile = path.join(__dirname, `kubo_stdout_${logTimestamp}.log`);
-    const kuboStderrLogFile = path.join(__dirname, `kubo_stderr_${logTimestamp}.log`);
+    const kuboStdoutLogFile = path.join(LOG_DIR, `kubo_stdout_${logTimestamp}.log`);
+    const kuboStderrLogFile = path.join(LOG_DIR, `kubo_stderr_${logTimestamp}.log`);
     const kuboLogStream = fs.createWriteStream(kuboStdoutLogFile, { flags: "a" });
     const kuboErrStream = fs.createWriteStream(kuboStderrLogFile, { flags: "a" });
 
