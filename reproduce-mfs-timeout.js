@@ -269,6 +269,7 @@ const FILES_PER_DIR = 5000; // More files per dir to build cache faster
 const PARALLEL_OPS = 100; // Increase parallelism
 const ROUTING_STRESS_OPS = 100; // More routing pressure
 const USE_FLUSH = true;
+const PERIODIC_FLUSH = true;
 
 console.log("=".repeat(70));
 console.log("IPFS MFS files.rm Timeout Reproduction Script");
@@ -281,6 +282,7 @@ console.log(`Files per directory: ${FILES_PER_DIR}`);
 console.log(`Parallel operations: ${PARALLEL_OPS}`);
 console.log(`Routing stress operations: ${ROUTING_STRESS_OPS}`);
 console.log(`Flush enabled: ${USE_FLUSH}`);
+console.log(`Periodic flush enabled: ${PERIODIC_FLUSH}`);
 console.log("");
 console.log("This script reproduces the exact conditions from:");
 console.log("- GitHub issue: https://github.com/ipfs/kubo/issues/10842");
@@ -565,7 +567,7 @@ async function runMfsTimeoutTest() {
 
                         // FLUSH FIX: Clear parent directory cache every 100 files to prevent degradation
                         // This prevents the cache accumulation issue described in https://github.com/ipfs/kubo/issues/10842
-                        if ((k + PARALLEL_OPS) % 100 === 0 && k > 0) {
+                        if (PERIODIC_FLUSH && (k + PARALLEL_OPS) % 100 === 0 && k > 0) {
                             const parentDir = `${baseDir}/${subplebbitAddress}/postUpdates/${timestampRange}`;
                             console.log(`      [CACHE FIX] Flushing parent directory cache at file ${k + PARALLEL_OPS}...`);
                             try {
