@@ -562,6 +562,18 @@ async function runMfsTimeoutTest() {
                     // Process files in batches
                     for (let k = 0; k < filePromises.length; k += PARALLEL_OPS) {
                         await Promise.all(filePromises.slice(k, k + PARALLEL_OPS));
+
+                        // FLUSH FIX: Clear parent directory cache every 100 files to prevent degradation
+                        // This prevents the cache accumulation issue described in https://github.com/ipfs/kubo/issues/10842
+                        if ((k + PARALLEL_OPS) % 100 === 0 && k > 0) {
+                            const parentDir = `${baseDir}/${subplebbitAddress}/postUpdates/${timestampRange}`;
+                            console.log(`      [CACHE FIX] Flushing parent directory cache at file ${k + PARALLEL_OPS}...`);
+                            try {
+                                await ipfs.files.flush(parentDir);
+                            } catch (e) {
+                                console.log(`      [CACHE FIX] Flush failed: ${e.message}`);
+                            }
+                        }
                     }
 
                     if ((i + 1) % 20 === 0) {
