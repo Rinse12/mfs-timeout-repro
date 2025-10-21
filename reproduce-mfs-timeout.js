@@ -538,13 +538,15 @@ async function runMfsTimeoutTest() {
                         const filePath = `${baseDir}/${subplebbitAddress}/postUpdates/${timestampRange}/${commentCid}/update`;
                         const content = `Comment update data ${i}-${j} ` + "x".repeat(500); // Larger content
 
+                        const writeOptions = {
+                            create: true,
+                            parents: true,
+                            flush: USE_FLUSH
+                        };
+
                         filePromises.push(
                             withTimeout(
-                                ipfs.files.write(filePath, new TextEncoder().encode(content), {
-                                    create: true,
-                                    parents: true,
-                                    flush: USE_FLUSH
-                                }),
+                                ipfs.files.write(filePath, new TextEncoder().encode(content), writeOptions),
                                 `ipfs.files.write(${filePath})`,
                                 240000,
                                 { 
@@ -553,7 +555,7 @@ async function runMfsTimeoutTest() {
                                     timestampRange: timestampRange,
                                     commentCid: commentCid,
                                     contentSize: content.length,
-                                    flush: false
+                                    flush: writeOptions.flush
                                 }
                             ).catch((err) => {
                                 console.error(`Failed to write ${filePath}:`, err.message);
