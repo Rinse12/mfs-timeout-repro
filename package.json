@@ -8,7 +8,7 @@
     "start": "node reproduce-mfs-timeout.js"
   },
   "dependencies": {
-    "kubo-rpc-client": "^3.0.1",
-    "kubo": "0.38.1"
+    "kubo-rpc-client": "7.0.0",
+    "kubo": "0.41.0"
   }
 }

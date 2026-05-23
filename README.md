@@ -67,6 +67,47 @@ const USE_FLUSH = true; // Bug occurs with both true and false
 -   Increase `NUM_DIRECTORIES` and `FILES_PER_DIR` values
 -   Run the script multiple times back-to-back
 
+## Does the Kubo Node Crash or Hang?
+
+When the JS-side timeout fires, the script probes the running kubo daemon directly over
+its HTTP API (bypassing `kubo-rpc-client`) with an independent 30s timeout per call. The
+probe distinguishes three failure modes:
+
+-   **CRASHED** — daemon process exited before the probe ran
+-   **HUNG** — daemon is alive but unresponsive on every endpoint
+-   **PARTIALLY HUNG** — only the MFS subsystem is unresponsive; the rest of the API still answers
+-   **RESPONSIVE** — daemon answered all probes (hang is confined to the in-flight MFS request)
+
+Probed endpoints:
+
+-   `POST /api/v0/id`
+-   `POST /api/v0/version`
+-   `POST /api/v0/repo/stat`
+-   `POST /api/v0/files/stat?arg=/`  ← MFS-side probe
+
+### Observed Result (kubo 0.41.0, kubo-rpc-client 7.0.0, Node v22.22.0)
+
+```
+🩺 KUBO DAEMON HEALTH REPORT
+======================================================================
+Process state: running
+  POST http://127.0.0.1:45003/api/v0/id          -> ✅ OK (200) after 50ms
+  POST http://127.0.0.1:45003/api/v0/version     -> ✅ OK (200) after 5ms
+  POST http://127.0.0.1:45003/api/v0/repo/stat   -> ✅ OK (200) after 441ms
+  POST http://127.0.0.1:45003/api/v0/files/stat?arg=/  -> ⏱️  HUNG (>30s)
+
+Verdict: 🪦 PARTIALLY HUNG — kubo MFS subsystem hung
+         (files/stat unresponsive) but core API still answers
+```
+
+**The kubo daemon does not crash. It is the MFS subsystem that hangs indefinitely** —
+even `files/stat /` on the MFS root never returns. `/id`, `/version`, and `/repo/stat`
+keep responding in milliseconds, so the process itself is healthy. Once MFS enters this
+state, the only recovery in our tests is to kill and restart kubo.
+
+The full probe result (per-endpoint timings, status codes, response bodies, process
+state) is appended to the operations JSON log under `daemonHealthAtTimeout`.
+
 ## Node Configuration
 
 The script automatically configures the test IPFS node with:

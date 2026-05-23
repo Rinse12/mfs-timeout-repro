@@ -82,21 +82,21 @@ function withTimeout(promise, operation, timeoutMs = 240000, details = {}) {
     const operationEntry = logOperationStart(operationType, operation, details);
     
     const timeoutPromise = new Promise((_, reject) => {
-        const timeoutId = setTimeout(() => {
+        const timeoutId = setTimeout(async () => {
             if (timeoutOccurred) return; // Prevent multiple timeouts
             timeoutOccurred = true;
-            
+
             const timestamp = new Date().toISOString();
             const errorMsg = `TIMEOUT: ${operation} exceeded ${timeoutMs / 1000}s at ${timestamp}`;
             console.error(`⏰ ${errorMsg}`);
-            
+
             // Log timeout as error
             const timeoutError = new Error(errorMsg);
             logOperationEnd(operationEntry, null, timeoutError);
-            
+
             // Print detailed timeout information
             console.error("\n" + "=".repeat(70));
-            console.error("🚨 TIMEOUT DETECTED - PROGRAM TERMINATING 🚨");
+            console.error("🚨 TIMEOUT DETECTED - PROBING KUBO DAEMON 🚨");
             console.error("=".repeat(70));
             console.error(`Operation: ${operation}`);
             console.error(`Timeout duration: ${timeoutMs / 1000} seconds`);
@@ -104,23 +104,44 @@ function withTimeout(promise, operation, timeoutMs = 240000, details = {}) {
             console.error(`Timestamp: ${timestamp}`);
             console.error(`Total operations completed: ${ipfsOperationStats.total}`);
             console.error("=".repeat(70));
-            
-            // Print summary and write final JSON
-            printOperationSummary();
+
+            // Probe the kubo daemon to see if it crashed, hung, or is still responsive
+            const probe = await probeDaemonHealth(30000);
+            console.error("\n" + "=".repeat(70));
+            console.error("🩺 KUBO DAEMON HEALTH REPORT");
+            console.error("=".repeat(70));
+            console.error(`Process state: ${probe.processState}`);
+            if (probe.exitCode !== null) console.error(`Process exit code: ${probe.exitCode}`);
+            if (probe.signal !== null) console.error(`Process signal: ${probe.signal}`);
+            for (const r of probe.endpoints) {
+                const status = r.ok ? `✅ OK (${r.status})` : (r.timedOut ? `⏱️  HUNG (>${r.timeoutMs / 1000}s)` : `❌ ERROR`);
+                console.error(`  POST ${r.url}`);
+                console.error(`    -> ${status} after ${r.durationMs}ms${r.error ? ` — ${r.error}` : ""}`);
+                if (r.body) console.error(`    body: ${r.body.slice(0, 200)}`);
+            }
+            console.error("");
+            console.error(`Verdict: ${probe.verdict}`);
+            console.error("=".repeat(70));
+
+            // Persist probe result alongside operations log
+            operationLog.daemonHealthAtTimeout = probe;
             writeOperationLog();
-            
-            // Kill IPFS daemon immediately to free resources
+
+            // Print summary
+            printOperationSummary();
+
+            // Kill IPFS daemon now that we've measured its state
             if (ipfsDaemon) {
                 console.error("🔧 Force killing IPFS daemon...");
                 ipfsDaemon.kill('SIGKILL');
             }
-            
+
             // Force immediate exit with no grace period
             console.error("🚪 Forcing process exit...");
             clearTimeout(timeoutId);
             process.exit(1);
         }, timeoutMs);
-        
+
         // Store timeout ID for potential cleanup
         operationEntry._timeoutId = timeoutId;
     });
@@ -254,6 +275,93 @@ function printOperationSummary() {
         console.log(`  ${operation}: ${count} (${percentage}%)`);
     }
     console.log("=".repeat(50));
+}
+
+// Probe the kubo daemon to determine whether it crashed, hung, or is still responsive
+// when a JS-side MFS timeout fires. Hits the HTTP API directly (bypassing kubo-rpc-client)
+// with its own AbortController-based timeouts so a hung daemon can't hang the probe.
+async function probeDaemonHealth(perEndpointTimeoutMs = 30000) {
+    const apiBase = `http://127.0.0.1:${API_PORT}/api/v0`;
+    const endpoints = [
+        { url: `${apiBase}/id`, label: "id" },
+        { url: `${apiBase}/version`, label: "version" },
+        { url: `${apiBase}/repo/stat`, label: "repo/stat" },
+        { url: `${apiBase}/files/stat?arg=/`, label: "files/stat /" }
+    ];
+
+    const probeResults = [];
+    for (const ep of endpoints) {
+        const start = Date.now();
+        const controller = new AbortController();
+        const abortId = setTimeout(() => controller.abort(), perEndpointTimeoutMs);
+        try {
+            const res = await fetch(ep.url, { method: "POST", signal: controller.signal });
+            const body = await res.text();
+            probeResults.push({
+                label: ep.label,
+                url: ep.url,
+                ok: res.ok,
+                status: res.status,
+                durationMs: Date.now() - start,
+                timedOut: false,
+                timeoutMs: perEndpointTimeoutMs,
+                body: body.slice(0, 500),
+                error: null
+            });
+        } catch (e) {
+            const timedOut = e.name === "AbortError";
+            probeResults.push({
+                label: ep.label,
+                url: ep.url,
+                ok: false,
+                status: null,
+                durationMs: Date.now() - start,
+                timedOut,
+                timeoutMs: perEndpointTimeoutMs,
+                body: null,
+                error: e.message
+            });
+        } finally {
+            clearTimeout(abortId);
+        }
+    }
+
+    let processState = "unknown";
+    let exitCode = null;
+    let signal = null;
+    if (ipfsDaemon) {
+        exitCode = ipfsDaemon.exitCode;
+        signal = ipfsDaemon.signalCode;
+        if (exitCode !== null || signal !== null) {
+            processState = `exited (code=${exitCode}, signal=${signal})`;
+        } else if (ipfsDaemon.killed) {
+            processState = "killed (signal sent, awaiting exit)";
+        } else {
+            processState = "running";
+        }
+    }
+
+    const allHung = probeResults.every((r) => r.timedOut);
+    const anyHung = probeResults.some((r) => r.timedOut);
+    const allOk = probeResults.every((r) => r.ok);
+    const mfsHung = probeResults.find((r) => r.label === "files/stat /")?.timedOut;
+
+    let verdict;
+    if (processState.startsWith("exited")) {
+        verdict = "🔥 CRASHED — kubo daemon process exited before the probe ran";
+    } else if (allHung) {
+        verdict = "💀 HUNG — kubo daemon is unresponsive on ALL probed endpoints (id/version/repo/files)";
+    } else if (mfsHung && !allHung) {
+        verdict = "🪦 PARTIALLY HUNG — kubo MFS subsystem hung (files/stat unresponsive) but core API still answers";
+    } else if (anyHung) {
+        verdict = "⚠️  PARTIALLY HUNG — kubo daemon partially unresponsive (some endpoints timed out)";
+    } else if (allOk) {
+        verdict = "✅ RESPONSIVE — kubo daemon answered all probes; the hang appears confined to the in-flight MFS request";
+    } else {
+        verdict = "❓ DEGRADED — kubo daemon answered with errors (see endpoint results above)";
+    }
+
+    return { processState, exitCode, signal, endpoints: probeResults, verdict };
 }
 
 // Configuration
