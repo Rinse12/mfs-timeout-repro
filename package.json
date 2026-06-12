@@ -2,13 +2,21 @@
   "name": "mfs-timeout-repro",
   "version": "1.0.0",
   "type": "module",
-  "description": "Reproduce IPFS MFS files.rm timeout bug",
+  "description": "Reproduce IPFS MFS deadlock/timeout bug (ipfs/kubo#10842)",
   "main": "reproduce-mfs-timeout.js",
   "scripts": {
-    "start": "node reproduce-mfs-timeout.js"
+    "start": "node reproduce-mfs-timeout.js",
+    "repro:e1": "FAULT_MODE=E1 node repro-pkc-js-pattern.js",
+    "repro:e0": "FAULT_MODE=none PARALLEL_COMMUNITIES=3 NUM_COMMUNITIES=6 node repro-pkc-js-pattern.js",
+    "repro:e2": "FAULT_MODE=E2 PARALLEL_COMMUNITIES=3 NUM_COMMUNITIES=6 node repro-pkc-js-pattern.js",
+    "repro:e3": "FAULT_MODE=E3 PARALLEL_COMMUNITIES=3 NUM_COMMUNITIES=6 node repro-pkc-js-pattern.js",
+    "repro:e4": "FAULT_MODE=E4 PARALLEL_COMMUNITIES=3 NUM_COMMUNITIES=6 node repro-pkc-js-pattern.js",
+    "repro:e5": "FAULT_MODE=E5 PARALLEL_COMMUNITIES=3 NUM_COMMUNITIES=6 node repro-pkc-js-pattern.js"
   },
   "dependencies": {
     "kubo-rpc-client": "7.0.0",
-    "kubo": "0.41.0"
+    "kubo": "0.42.0",
+    "p-limit": "7.1.1",
+    "p-timeout": "7.0.1"
   }
 }

@@ -5,6 +5,42 @@ https://github.com/ipfs/kubo/issues/10842
 
 The script automatically sets up and manages its own Kubo IPFS node with garbage collection disabled to maximize the chance of reproducing the bug.
 
+## 2026-06-11 update: DETERMINISTIC reproduction found (kubo 0.42.0)
+
+`repro-pkc-js-pattern.js` now reproduces the wedge deterministically and machine-checks
+the deadlock signature against a live goroutine dump. See `ISSUE.md` for the upstream
+report draft. Quick start:
+
+```bash
+npm install
+npm run repro:e2   # repo.gc racing concurrent MFS writes -> wedge in ~2 min, 3/3 runs (exit 42)
+npm run repro:e1   # minimal primitive: one dir-node block removed offline -> wedge 100% (exit 42)
+npm run repro:e0   # control: same traffic, no fault -> clean (exit 0)
+node test-notify-race.mjs  # null test: bitswap get-before-put wake-up works (2000/2000)
+```
+
+Mechanism (verified by the goroutine dumps + blockstore forensics):
+
+1. `repo gc` collects directory-node blocks that boxo's in-memory MFS state still
+   references (GC's live-set walk only sees the persisted root).
+2. The next MFS traversal does `childUnsync -> unixfs Find -> dagService.Get(<gone CID>)`
+   -> falls through to `bitswap SyncGetBlock` with **no timeout**, while **holding the
+   MFS directory mutex**.
+3. On a no-peer daemon the wait is forever; all other `files` ops (including `files rm`
+   recovery attempts) pile up behind the mutex chain (152+ waiters observed). The core
+   API stays healthy; only a daemon restart recovers.
+
+Exit codes: `0` clean, `42` wedge with full deadlock signature, `41` hang without signature.
+Fault modes (`FAULT_MODE` env): `E1` offline block-rm control, `E2` concurrent gc,
+`E3` recursive-rm race, `E4` dedup purge, `E5` aborted requests, `none` pure traffic.
+On a wedge the harness saves the goroutine dump and a JSON report (with a
+`refs local` multihash diff naming every MFS-referenced block missing from the
+blockstore) under `logs/`, and keeps the wedged repo in `.test-ipfs-node/` for
+post-mortem.
+
+`watch-test-server-wedge.mjs` is a companion watchdog that polls live pkc-js test-server
+daemons (ports 15001-15006) for the same signature while a test suite runs.
+
 ## Prerequisites
 
 **This is a self-contained reproduction script** - just install dependencies:

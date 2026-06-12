@@ -3,3 +3,5 @@ ipfs-operations*
 kubo_std*
 .test-ipfs-node/
 logs/
+WEDGED-*.marker
+.test-ipfs-node-race/
